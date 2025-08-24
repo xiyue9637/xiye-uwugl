@@ -1,5 +1,5 @@
 // worker.js
-// 添加用户主页、聊天功能和修复封禁功能
+// 修复用户头像点击问题并优化封禁功能
 
 // 管理员凭证
 const ADMIN_USERNAME = 'admin';
@@ -388,11 +388,8 @@ export default {
             }
           }
           
-          // 获取用户信息
+          // 获取用户信息 - 修复：无需登录即可访问
           if (pathname.startsWith('/api/users/') && request.method === 'GET') {
-            const { valid, error, user: currentUser } = await checkPermission(env, request);
-            if (!valid) return safeJsonResponse({ error }, 403);
-            
             const username = pathname.split('/').pop();
             const userKey = `users/${username}`;
             const userData = await env.BLOG_KV.get(userKey);
@@ -889,7 +886,7 @@ export default {
   }
 };
 
-// 前端 HTML（添加用户主页、聊天功能和修复封禁功能）
+// 前端 HTML（修复用户头像点击问题）
 const indexHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1832,10 +1829,11 @@ const indexHTML = `<!DOCTYPE html>
         });
       });
       
-      // 点击头像显示用户主页
+      // 点击头像显示用户主页 - 修复：确保获取正确的用户名
       document.addEventListener('click', function(e) {
         if (e.target.classList.contains('avatar') && e.target.alt) {
-          const username = e.target.alt;
+          // 修复：从alt属性获取用户名，而不是直接使用alt
+          const username = e.target.alt.replace('@', '');
           showUserProfile(username);
         }
       });
@@ -1864,7 +1862,7 @@ const indexHTML = `<!DOCTYPE html>
             html += '<div class="post" data-post-id="' + escapeHTML(post.id) + '">' +
               '<div class="post-header" title="' + safeNickname + '">' +
                 '<img src="' + escapeHTML(post.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" ' +
-                     'alt="' + escapeHTML(post.author) + '" class="avatar">' +
+                     'alt="@' + escapeHTML(post.author) + '" class="avatar">' +
                 '<div>' +
                   '<div class="author">' + safeNickname + '</div>' +
                   '<div class="post-time">' + new Date(post.createdAt).toLocaleString() + '</div>' +
@@ -2013,7 +2011,7 @@ const indexHTML = `<!DOCTYPE html>
             html += '<div class="comment" data-comment-id="' + escapeHTML(comment.id) + '" title="' + safeNickname + '">' +
                       '<div class="comment-header">' +
                         '<img src="' + escapeHTML(comment.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" ' +
-                             'alt="' + escapeHTML(comment.author) + '" class="avatar" style="width:24px;height:24px;margin-right:5px;">' +
+                             'alt="@' + escapeHTML(comment.author) + '" class="avatar" style="width:24px;height:24px;margin-right:5px;">' +
                         '<span class="comment-author">' + safeNickname + '</span>' +
                         '<span class="comment-time">' + new Date(comment.createdAt).toLocaleString() + '</span>' +
                       '</div>' +
@@ -2080,7 +2078,7 @@ const indexHTML = `<!DOCTYPE html>
       if (state.token && state.username) {
         html = '<div class="user-info">' +
           '<img src="' + (state.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" ' +
-               'alt="' + state.username + '" class="avatar" style="width:40px;height:40px;">' +
+               'alt="@' + state.username + '" class="avatar" style="width:40px;height:40px;">' +
           '<div>' +
             '<div>' + state.nickname + ' ' + (state.role === 'admin' ? '(管理员)' : '') + '</div>' +
             '<button id="logoutBtn" style="margin-top:5px;padding:3px 10px;font-size:0.9rem;">退出</button>' +
@@ -2132,11 +2130,14 @@ const indexHTML = `<!DOCTYPE html>
       currentProfileUser = username;
       elements.profileModal.style.display = 'block';
       
-      // 获取用户信息
+      // 获取用户信息 - 修复：添加错误日志
       fetch('/api/users/' + username)
         .then(response => {
           if (!response.ok) {
-            throw new Error('无法获取用户信息');
+            return response.json().then(data => {
+              console.error('API响应错误:', data);
+              throw new Error(data.error || '无法获取用户信息');
+            });
           }
           return response.json();
         })
@@ -2166,7 +2167,7 @@ const indexHTML = `<!DOCTYPE html>
             elements.saveProfileBtn.style.display = 'none';
             
             // 检查是否是管理员
-            if (state.role === 'admin') {
+            if (state.role === 'admin' && username !== 'admin') {
               elements.adminActions.style.display = 'block';
               
               if (user.banned) {
@@ -2176,12 +2177,14 @@ const indexHTML = `<!DOCTYPE html>
                 elements.banUserBtn.style.display = 'block';
                 elements.unbanUserBtn.style.display = 'none';
               }
+            } else {
+              elements.adminActions.style.display = 'none';
             }
           }
         })
         .catch(error => {
           console.error('获取用户信息失败:', error);
-          alert('无法获取用户信息');
+          alert('无法获取用户信息: ' + error.message);
           elements.profileModal.style.display = 'none';
         });
     }
