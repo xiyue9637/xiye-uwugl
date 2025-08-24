@@ -1,10 +1,11 @@
 // worker.js
-// 修复XSS漏洞、封禁功能和评论显示问题
+// 修复评论删除API问题并添加邀请码注册
 
 // 管理员凭证
 const ADMIN_USERNAME = 'admin';
 const ADMIN_PASSWORD = 'xiyue777';
 const BAN_MESSAGE = '您的账号已被管理员封禁,请联系 linyi8100@gmail.com 解封';
+const INVITE_CODE = 'xiyue666'; // 邀请码
 
 // 简单的 UUID 生成器
 function generateUUID() {
@@ -274,7 +275,7 @@ export default {
       // API 路由
       if (pathname.startsWith('/api/')) {
         try {
-          // 用户注册
+          // 用户注册 - 添加邀请码验证
           if (pathname === '/api/register' && request.method === 'POST') {
             let data;
             try {
@@ -283,7 +284,12 @@ export default {
               return safeJsonResponse({ error: '无效的JSON数据' }, 400);
             }
             
-            const { username, password, avatar } = data;
+            const { username, password, avatar, inviteCode } = data;
+            
+            // 验证邀请码
+            if (inviteCode !== INVITE_CODE) {
+              return safeJsonResponse({ error: '邀请码不正确' }, 403);
+            }
             
             // 基本验证
             if (!username || !password) {
@@ -528,6 +534,61 @@ export default {
             }
           }
           
+          // === 修复开始：添加删除评论API ===
+          // 删除评论（支持两种路径格式）
+          if ((pathname.startsWith('/api/comments/') || 
+               (pathname.startsWith('/api/posts/') && pathname.includes('/comments/'))) && 
+              request.method === 'DELETE') {
+            const { valid, error, user } = await checkPermission(env, request);
+            if (!valid) return safeJsonResponse({ error }, 403);
+            
+            // 从路径中提取postId和commentId
+            let postId, commentId;
+            
+            // 处理 /api/comments/postId/commentId 格式
+            if (pathname.startsWith('/api/comments/')) {
+              const parts = pathname.split('/');
+              if (parts.length >= 5) {
+                postId = parts[3];
+                commentId = parts[4];
+              }
+            } 
+            // 处理 /api/posts/postId/comments/commentId 格式
+            else if (pathname.includes('/comments/')) {
+              const parts = pathname.split('/');
+              const commentIndex = parts.indexOf('comments');
+              if (commentIndex > 0 && commentIndex < parts.length - 1) {
+                postId = parts[commentIndex - 1];
+                commentId = parts[commentIndex + 1];
+              }
+            }
+            
+            if (!postId || !commentId) {
+              return safeJsonResponse({ error: '无效的评论ID' }, 400);
+            }
+            
+            // 获取评论
+            try {
+              const comment = await env.BLOG_KV.get(`comments/${postId}/${commentId}`, 'json');
+              if (!comment) {
+                return safeJsonResponse({ error: '评论不存在' }, 404);
+              }
+              
+              // 检查权限：管理员或评论作者
+              if (user.role !== 'admin' && comment.author !== user.username) {
+                return safeJsonResponse({ error: '无权删除此评论' }, 403);
+              }
+              
+              // 删除评论
+              await env.BLOG_KV.delete(`comments/${postId}/${commentId}`);
+              return safeJsonResponse({ success: true });
+            } catch (e) {
+              console.error('删除评论时出错:', e);
+              return safeJsonResponse({ error: '无法删除评论' }, 500);
+            }
+          }
+          // === 修复结束 ===
+          
           // 封禁用户（仅管理员）
           if (pathname === '/api/ban' && request.method === 'POST') {
             const { valid, error, user } = await checkPermission(env, request);
@@ -655,7 +716,7 @@ export default {
   }
 };
 
-// 前端 HTML（修复XSS、封禁功能和评论显示问题）
+// 前端 HTML（修复评论删除问题）
 const indexHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -989,6 +1050,10 @@ const indexHTML = `<!DOCTYPE html>
         <label for="regAvatar">头像直链 (可选)</label>
         <input type="url" id="regAvatar" placeholder="https://example.com/avatar.jpg">
       </div>
+      <div class="form-group">
+        <label for="regInviteCode">邀请码</label>
+        <input type="text" id="regInviteCode" placeholder="输入邀请码">
+      </div>
       <button id="registerBtn">注册账号</button>
       <div class="error" id="regError"></div>
       <p>已有账号? <a href="#" id="showLogin">去登录</a></p>
@@ -1046,6 +1111,7 @@ const indexHTML = `<!DOCTYPE html>
       regUsername: document.getElementById('regUsername'),
       regPassword: document.getElementById('regPassword'),
       regAvatar: document.getElementById('regAvatar'),
+      regInviteCode: document.getElementById('regInviteCode'),
       registerBtn: document.getElementById('registerBtn'),
       regError: document.getElementById('regError'),
       showRegister: document.getElementById('showRegister'),
@@ -1159,8 +1225,9 @@ const indexHTML = `<!DOCTYPE html>
         var username = elements.regUsername.value;
         var password = elements.regPassword.value;
         var avatar = elements.regAvatar.value;
+        var inviteCode = elements.regInviteCode.value;
         
-        if (!username || !password) {
+        if (!username || !password || !inviteCode) {
           showError(elements.regError, '请填写完整信息');
           return;
         }
@@ -1171,7 +1238,8 @@ const indexHTML = `<!DOCTYPE html>
           body: JSON.stringify({ 
             username: username, 
             password: password,
-            avatar: avatar 
+            avatar: avatar,
+            inviteCode: inviteCode
           })
         })
         .then(function(response) {
@@ -1188,6 +1256,7 @@ const indexHTML = `<!DOCTYPE html>
             elements.regUsername.value = '';
             elements.regPassword.value = '';
             elements.regAvatar.value = '';
+            elements.regInviteCode.value = '';
             clearError(elements.regError);
             showLoginModal();
           } else {
@@ -1457,10 +1526,12 @@ const indexHTML = `<!DOCTYPE html>
               
               if (!confirm('确定要删除这条评论吗？')) return;
               
+              // === 修复开始：使用正确的API路径 ===
               fetch('/api/comments/' + postId + '/' + commentId, {
                 method: 'DELETE',
                 headers: { 'Authorization': 'Bearer ' + state.token }
               })
+              // === 修复结束 ===
               .then(function(response) {
                 if (!response.ok) {
                   return response.json().then(function(data) {
