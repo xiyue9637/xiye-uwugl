@@ -1,5 +1,5 @@
 // worker.js
-// 修复聊天功能并添加私信列表
+// 修复聊天功能并添加聊天按钮
 
 // 管理员凭证
 const ADMIN_USERNAME = 'admin';
@@ -142,7 +142,7 @@ async function verifyUser(env, username, password) {
   } catch (e) {
     console.error('验证用户时出错:', e);
     return null;
-  }
+    }
 }
 
 // 验证 JWT 令牌
@@ -861,33 +861,6 @@ export default {
             return safeJsonResponse(messages);
           }
           
-          // 标记消息为已读
-          if (pathname.startsWith('/api/messages/') && pathname.endsWith('/read') && request.method === 'POST') {
-            const { valid, error, user } = await checkPermission(env, request);
-            if (!valid) return safeJsonResponse({ error }, 403);
-            
-            const messageId = pathname.split('/')[3];
-            try {
-              const message = await env.BLOG_KV.get(`messages/${messageId}`, 'json');
-              if (!message) {
-                return safeJsonResponse({ error: '消息不存在' }, 404);
-              }
-              
-              // 检查权限：只有接收者可以标记消息为已读
-              if (message.to !== user.username) {
-                return safeJsonResponse({ error: '无权操作此消息' }, 403);
-              }
-              
-              message.read = true;
-              await env.BLOG_KV.put(`messages/${messageId}`, JSON.stringify(message));
-              
-              return safeJsonResponse({ success: true });
-            } catch (e) {
-              console.error('标记消息为已读时出错:', e);
-              return safeJsonResponse({ error: '无法标记消息为已读' }, 500);
-            }
-          }
-          
           return safeJsonResponse({ error: 'API 未找到' }, 404);
         } catch (e) {
           console.error('API 处理时出错:', e);
@@ -913,13 +886,13 @@ export default {
   }
 };
 
-// 前端 HTML（修复聊天功能并添加私信列表）
+// 前端 HTML（修复聊天功能并添加聊天按钮）
 const indexHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>渐变贴吧</title>
+  <title>贴吧</title>
   <style>
     :root {
       --primary: #6a11cb;
@@ -1124,6 +1097,12 @@ const indexHTML = `<!DOCTYPE html>
       font-size: 0.9rem;
     }
     
+    .btn-chat {
+      background: #6c5ce7;
+      padding: 6px 12px;
+      font-size: 0.9rem;
+    }
+    
     .auth-section {
       display: flex;
       gap: 15px;
@@ -1288,72 +1267,6 @@ const indexHTML = `<!DOCTYPE html>
       padding: 8px 15px;
     }
     
-    /* 消息列表样式 */
-    .messages-list {
-      max-height: 400px;
-      overflow-y: auto;
-    }
-    
-    .message-item {
-      display: flex;
-      padding: 12px 15px;
-      border-bottom: 1px solid #e0e0e0;
-      cursor: pointer;
-      transition: background 0.2s;
-    }
-    
-    .message-item:hover {
-      background: #f5f5f5;
-    }
-    
-    .message-item.unread {
-      background: #e3f2fd;
-    }
-    
-    .message-avatar {
-      width: 40px;
-      height: 40px;
-      border-radius: 50%;
-      object-fit: cover;
-      margin-right: 12px;
-    }
-    
-    .message-info {
-      flex: 1;
-    }
-    
-    .message-sender {
-      font-weight: 600;
-      color: var(--primary);
-    }
-    
-    .message-preview {
-      color: #666;
-      font-size: 0.9rem;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 200px;
-    }
-    
-    .message-time {
-      color: #999;
-      font-size: 0.8rem;
-    }
-    
-    .message-badge {
-      background: #ff4757;
-      color: white;
-      border-radius: 50%;
-      width: 20px;
-      height: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.7rem;
-      margin-left: 10px;
-    }
-    
     @media (max-width: 768px) {
       h1 {
         font-size: 2.5rem;
@@ -1368,8 +1281,8 @@ const indexHTML = `<!DOCTYPE html>
 <body>
   <div class="container">
     <header>
-      <h1>渐变贴吧</h1>
-      <p class="subtitle">一个丝滑流畅、实时模糊渐变的博客社区</p>
+      <h1>贴吧</h1>
+      <p class="subtitle">曦月的博客</p>
     </header>
 
     <div class="auth-section" id="authSection">
@@ -1379,7 +1292,6 @@ const indexHTML = `<!DOCTYPE html>
     <div class="tabs">
       <div class="tab active" data-tab="posts">全部帖子</div>
       <div class="tab" data-tab="create">发帖</div>
-      <div class="tab" data-tab="messages" id="messagesTabBtn" style="display:none;">消息</div>
     </div>
 
     <div id="postsTab" class="tab-content active">
@@ -1411,15 +1323,6 @@ const indexHTML = `<!DOCTYPE html>
         </div>
         <button id="submitPost">发布帖子</button>
         <div class="error" id="postError"></div>
-      </div>
-    </div>
-
-    <div id="messagesTab" class="tab-content">
-      <div class="card">
-        <h2>我的消息</h2>
-        <div class="messages-list" id="messagesList">
-          <!-- 消息列表将动态加载到这里 -->
-        </div>
       </div>
     </div>
 
@@ -1499,6 +1402,12 @@ const indexHTML = `<!DOCTYPE html>
         <button id="saveProfileBtn">保存更改</button>
         <div class="error" id="profileError"></div>
         
+        <!-- 聊天按钮 -->
+        <div id="chatActions" style="display:none;margin-top:20px;">
+          <h3>聊天操作</h3>
+          <button id="startChatBtn" class="btn-chat">发送消息</button>
+        </div>
+        
         <!-- 管理员操作 -->
         <div id="adminActions" style="display:none;margin-top:20px;">
           <h3>管理员操作</h3>
@@ -1537,7 +1446,6 @@ const indexHTML = `<!DOCTYPE html>
     
     // 全局变量
     let currentProfileUser = null;
-    let currentChatUser = null;
     
     // HTML 转义函数（防止XSS攻击）
     function escapeHTML(str) {
@@ -1586,8 +1494,10 @@ const indexHTML = `<!DOCTYPE html>
       saveProfileBtn: document.getElementById('saveProfileBtn'),
       profileError: document.getElementById('profileError'),
       adminActions: document.getElementById('adminActions'),
+      chatActions: document.getElementById('chatActions'),
       banUserBtn: document.getElementById('banUserBtn'),
       unbanUserBtn: document.getElementById('unbanUserBtn'),
+      startChatBtn: document.getElementById('startChatBtn'),
       profileTabs: document.querySelectorAll('.profile-tab'),
       profileTabContents: document.querySelectorAll('.profile-tab-content'),
       chatMessages: document.getElementById('chatMessages'),
@@ -1595,9 +1505,7 @@ const indexHTML = `<!DOCTYPE html>
       sendChatBtn: document.getElementById('sendChatBtn'),
       chatWithUser: document.getElementById('chatWithUser'),
       tabs: document.querySelectorAll('.tab'),
-      tabContents: document.querySelectorAll('.tab-content'),
-      messagesTabBtn: document.getElementById('messagesTabBtn'),
-      messagesList: document.getElementById('messagesList')
+      tabContents: document.querySelectorAll('.tab-content')
     };
 
     // 显示错误
@@ -1644,11 +1552,6 @@ const indexHTML = `<!DOCTYPE html>
             content.classList.remove('active');
             if (content.id === tabName + 'Tab') {
               content.classList.add('active');
-              
-              // 如果切换到消息标签，加载消息列表
-              if (tabName === 'messages') {
-                loadMessagesList();
-              }
             }
           });
         });
@@ -1909,6 +1812,12 @@ const indexHTML = `<!DOCTYPE html>
         unbanUser(currentProfileUser);
       });
       
+      // 开始聊天按钮
+      elements.startChatBtn.addEventListener('click', function() {
+        // 切换到聊天标签
+        document.querySelector('.profile-tab[data-tab="messages"]').click();
+      });
+      
       // 发送聊天消息
       elements.sendChatBtn.addEventListener('click', function() {
         const message = elements.chatInput.value.trim();
@@ -1939,6 +1848,7 @@ const indexHTML = `<!DOCTYPE html>
         })
         .catch(error => {
           console.error('发送消息失败:', error);
+          alert('发送消息失败: ' + error.message);
         });
       });
       
@@ -2061,7 +1971,7 @@ const indexHTML = `<!DOCTYPE html>
                 if (!response.ok) {
                   return response.json().then(function(data) {
                     throw new Error(data.error || '评论失败');
-                    });
+                  });
                 }
                 textarea.value = '';
                 // 重新加载评论
@@ -2196,15 +2106,9 @@ const indexHTML = `<!DOCTYPE html>
             '<button id="logoutBtn" style="margin-top:5px;padding:3px 10px;font-size:0.9rem;">退出</button>' +
           '</div>' +
         '</div>';
-        
-        // 显示消息标签按钮
-        elements.messagesTabBtn.style.display = 'block';
       } else {
         html = '<button id="loginBtnUI">登录</button>' +
                '<button id="registerBtnUI">注册</button>';
-               
-        // 隐藏消息标签按钮
-        elements.messagesTabBtn.style.display = 'none';
       }
       
       elements.authSection.innerHTML = html;
@@ -2276,7 +2180,7 @@ const indexHTML = `<!DOCTYPE html>
             // 显示编辑表单
             elements.editNickname.value = user.nickname;
             elements.editAvatar.value = user.avatar;
-            elements.adminActions.style.display = 'none';
+            elements.chatActions.style.display = 'none';
           } else {
             // 隐藏编辑表单
             elements.editNickname.closest('.form-group').style.display = 'none';
@@ -2284,6 +2188,9 @@ const indexHTML = `<!DOCTYPE html>
             elements.currentPassword.closest('.form-group').style.display = 'none';
             elements.newPassword.closest('.form-group').style.display = 'none';
             elements.saveProfileBtn.style.display = 'none';
+            
+            // 显示聊天按钮
+            elements.chatActions.style.display = 'block';
             
             // 检查是否是管理员
             if (state.role === 'admin' && username !== 'admin') {
@@ -2432,94 +2339,6 @@ const indexHTML = `<!DOCTYPE html>
         })
         .catch(error => {
           console.error('加载消息失败:', error);
-        });
-    }
-    
-    // 加载消息列表
-    function loadMessagesList() {
-      if (!state.token) return;
-      
-      fetch('/api/messages')
-        .then(response => {
-          if (!response.ok) {
-            throw new Error('无法加载消息列表');
-          }
-          return response.json();
-        })
-        .then(messages => {
-          // 按用户分组消息
-          const userMessages = {};
-          
-          for (var i = 0; i < messages.length; i++) {
-            var message = messages[i];
-            var otherUser = message.from === state.username ? message.to : message.from;
-            
-            if (!userMessages[otherUser]) {
-              userMessages[otherUser] = {
-                user: otherUser,
-                lastMessage: message,
-                unread: 0
-              };
-            }
-            
-            // 更新最新消息
-            if (new Date(message.createdAt) > new Date(userMessages[otherUser].lastMessage.createdAt)) {
-              userMessages[otherUser].lastMessage = message;
-            }
-            
-            // 统计未读消息
-            if (message.to === state.username && !message.read) {
-              userMessages[otherUser].unread++;
-            }
-          }
-          
-          // 转换为数组并排序
-          const messageList = Object.values(userMessages);
-          messageList.sort((a, b) => new Date(b.lastMessage.createdAt) - new Date(a.lastMessage.createdAt));
-          
-          // 生成HTML
-          var html = '';
-          for (var i = 0; i < messageList.length; i++) {
-            var item = messageList[i];
-            var lastMessage = item.lastMessage;
-            var preview = lastMessage.content.length > 30 ? 
-                          lastMessage.content.substring(0, 30) + '...' : 
-                          lastMessage.content;
-            
-            html += '<div class="message-item ' + (item.unread > 0 ? 'unread' : '') + 
-                    '" data-user="' + escapeHTML(item.user) + '">' +
-              '<img src="https://api.dicebear.com/7.x/avataaars/svg?seed=' + escapeHTML(item.user) + 
-                    '" class="message-avatar">' +
-              '<div class="message-info">' +
-                '<div class="message-sender">' + escapeHTML(item.user) + '</div>' +
-                '<div class="message-preview">' + escapeHTML(preview) + '</div>' +
-              '</div>' +
-              '<div class="message-time">' + new Date(lastMessage.createdAt).toLocaleTimeString() + '</div>';
-            
-            if (item.unread > 0) {
-              html += '<div class="message-badge">' + item.unread + '</div>';
-            }
-            
-            html += '</div>';
-          }
-          
-          elements.messagesList.innerHTML = html || '<p>还没有消息</p>';
-          
-          // 添加点击事件
-          var messageItems = document.querySelectorAll('.message-item');
-          for (var i = 0; i < messageItems.length; i++) {
-            messageItems[i].addEventListener('click', function() {
-              var username = this.getAttribute('data-user');
-              showUserProfile(username);
-              
-              // 切换到聊天标签
-              document.querySelector('.profile-tab[data-tab="messages"]').click();
-            });
-          }
-        })
-        .catch(error => {
-          console.error('加载消息列表失败:', error);
-          elements.messagesList.innerHTML = '<p>加载消息失败</p>';
         });
     }
 
