@@ -1,5 +1,5 @@
 // worker.js
-// 修复评论删除API问题并添加邀请码注册
+// 添加用户主页、聊天功能和修复封禁功能
 
 // 管理员凭证
 const ADMIN_USERNAME = 'admin';
@@ -94,8 +94,10 @@ async function initAdmin(env) {
       const passwordHash = simpleSha256(ADMIN_PASSWORD);
       
       await env.BLOG_KV.put(adminKey, JSON.stringify({
+        username: ADMIN_USERNAME,
         passwordHash,
         avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=admin',
+        nickname: '管理员',
         banned: false,
         role: 'admin',
         createdAt: new Date().toISOString()
@@ -129,8 +131,10 @@ async function verifyUser(env, username, password) {
     if (user.passwordHash === expectedHash && !user.banned) {
       return {
         username: user.username || username,
+        nickname: user.nickname || username,
         role: user.role || 'user',
-        avatar: user.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default'
+        avatar: user.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default',
+        createdAt: user.createdAt
       };
     }
     
@@ -224,8 +228,10 @@ async function checkPermission(env, request) {
       valid: true, 
       user: {
         username: payload.username,
+        nickname: user.nickname || payload.username,
         role: user.role || 'user',
-        avatar: user.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default'
+        avatar: user.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default',
+        createdAt: user.createdAt
       }
     };
   } catch (e) {
@@ -284,7 +290,7 @@ export default {
               return safeJsonResponse({ error: '无效的JSON数据' }, 400);
             }
             
-            const { username, password, avatar, inviteCode } = data;
+            const { username, password, avatar, inviteCode, nickname } = data;
             
             // 验证邀请码
             if (inviteCode !== INVITE_CODE) {
@@ -322,6 +328,7 @@ export default {
                 username,
                 passwordHash,
                 avatar: avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default',
+                nickname: nickname || username,
                 banned: false,
                 role: 'user',
                 createdAt: new Date().toISOString()
@@ -370,13 +377,101 @@ export default {
               return safeJsonResponse({
                 token: `${header}.${payloadStr}.${signature}`,
                 username: user.username,
+                nickname: user.nickname,
                 role: user.role,
-                avatar: user.avatar
+                avatar: user.avatar,
+                createdAt: user.createdAt
               });
             } catch (e) {
               console.error('生成令牌时出错:', e);
               return safeJsonResponse({ error: '无法生成令牌' }, 500);
             }
+          }
+          
+          // 获取用户信息
+          if (pathname.startsWith('/api/users/') && request.method === 'GET') {
+            const { valid, error, user: currentUser } = await checkPermission(env, request);
+            if (!valid) return safeJsonResponse({ error }, 403);
+            
+            const username = pathname.split('/').pop();
+            const userKey = `users/${username}`;
+            const userData = await env.BLOG_KV.get(userKey);
+            
+            if (!userData) {
+              return safeJsonResponse({ error: '用户不存在' }, 404);
+            }
+            
+            let user;
+            try {
+              user = JSON.parse(userData);
+            } catch (e) {
+              console.error('解析用户数据失败:', e);
+              return safeJsonResponse({ error: '用户数据损坏' }, 500);
+            }
+            
+            // 只返回必要信息
+            return safeJsonResponse({
+              username: user.username,
+              nickname: user.nickname,
+              avatar: user.avatar,
+              role: user.role,
+              createdAt: user.createdAt,
+              banned: user.banned
+            });
+          }
+          
+          // 更新用户信息
+          if (pathname.startsWith('/api/users/') && pathname.endsWith('/profile') && request.method === 'PUT') {
+            const { valid, error, user: currentUser } = await checkPermission(env, request);
+            if (!valid) return safeJsonResponse({ error }, 403);
+            
+            const username = pathname.split('/')[3];
+            if (currentUser.username !== username) {
+              return safeJsonResponse({ error: '无权修改他人信息' }, 403);
+            }
+            
+            let data;
+            try {
+              data = await request.json();
+            } catch (e) {
+              return safeJsonResponse({ error: '无效的JSON数据' }, 400);
+            }
+            
+            const userKey = `users/${username}`;
+            const userData = await env.BLOG_KV.get(userKey);
+            
+            if (!userData) {
+              return safeJsonResponse({ error: '用户不存在' }, 404);
+            }
+            
+            let user;
+            try {
+              user = JSON.parse(userData);
+            } catch (e) {
+              console.error('解析用户数据失败:', e);
+              return safeJsonResponse({ error: '用户数据损坏' }, 500);
+            }
+            
+            // 更新信息
+            if (data.nickname) user.nickname = data.nickname;
+            if (data.avatar) user.avatar = data.avatar;
+            
+            // 更新密码
+            if (data.currentPassword && data.newPassword) {
+              const currentPasswordHash = simpleSha256(data.currentPassword);
+              if (user.passwordHash !== currentPasswordHash) {
+                return safeJsonResponse({ error: '当前密码错误' }, 400);
+              }
+              
+              if (data.newPassword.length < 6) {
+                return safeJsonResponse({ error: '新密码至少需要6个字符' }, 400);
+              }
+              
+              user.passwordHash = simpleSha256(data.newPassword);
+            }
+            
+            await env.BLOG_KV.put(userKey, JSON.stringify(user));
+            return safeJsonResponse({ success: true });
           }
           
           // 获取所有帖子
@@ -430,6 +525,7 @@ export default {
                 content,
                 type,
                 author: user.username,
+                nickname: user.nickname,
                 avatar: user.avatar,
                 createdAt: new Date().toISOString()
               }));
@@ -497,6 +593,7 @@ export default {
                 id: commentId,
                 content,
                 author: user.username,
+                nickname: user.nickname,
                 avatar: user.avatar,
                 createdAt: new Date().toISOString()
               }));
@@ -534,8 +631,7 @@ export default {
             }
           }
           
-          // === 修复开始：添加删除评论API ===
-          // 删除评论（支持两种路径格式）
+          // 删除评论
           if ((pathname.startsWith('/api/comments/') || 
                (pathname.startsWith('/api/posts/') && pathname.includes('/comments/'))) && 
               request.method === 'DELETE') {
@@ -587,7 +683,6 @@ export default {
               return safeJsonResponse({ error: '无法删除评论' }, 500);
             }
           }
-          // === 修复结束 ===
           
           // 封禁用户（仅管理员）
           if (pathname === '/api/ban' && request.method === 'POST') {
@@ -635,7 +730,13 @@ export default {
               userObj.banned = true;
               
               await env.BLOG_KV.put(userKey, JSON.stringify(userObj));
-              return safeJsonResponse({ success: true });
+              return safeJsonResponse({ 
+                success: true,
+                user: {
+                  username: username,
+                  banned: true
+                }
+              });
             } catch (e) {
               console.error('封禁用户时出错:', e);
               return safeJsonResponse({ error: '无法封禁用户' }, 500);
@@ -684,11 +785,83 @@ export default {
               userObj.banned = false;
               
               await env.BLOG_KV.put(userKey, JSON.stringify(userObj));
-              return safeJsonResponse({ success: true });
+              return safeJsonResponse({ 
+                success: true,
+                user: {
+                  username: username,
+                  banned: false
+                }
+              });
             } catch (e) {
               console.error('解封用户时出错:', e);
               return safeJsonResponse({ error: '无法解封用户' }, 500);
             }
+          }
+          
+          // 发送消息
+          if (pathname === '/api/messages' && request.method === 'POST') {
+            const { valid, error, user } = await checkPermission(env, request);
+            if (!valid) return safeJsonResponse({ error }, 403);
+            
+            let data;
+            try {
+              data = await request.json();
+            } catch (e) {
+              return safeJsonResponse({ error: '无效的JSON数据' }, 400);
+            }
+            
+            const { to, content } = data;
+            
+            if (!to || !content) {
+              return safeJsonResponse({ error: '接收者和内容是必填项' }, 400);
+            }
+            
+            // 检查接收者是否存在
+            const toUser = await env.BLOG_KV.get(`users/${to}`);
+            if (!toUser) {
+              return safeJsonResponse({ error: '接收者不存在' }, 404);
+            }
+            
+            // 创建消息
+            const messageId = generateUUID();
+            const message = {
+              id: messageId,
+              from: user.username,
+              to: to,
+              content: content,
+              createdAt: new Date().toISOString(),
+              read: false
+            };
+            
+            // 保存消息
+            await env.BLOG_KV.put(`messages/${messageId}`, JSON.stringify(message));
+            
+            // 添加到发送者和接收者的消息列表
+            await env.BLOG_KV.put(`user-messages/${user.username}/${messageId}`, 'sent');
+            await env.BLOG_KV.put(`user-messages/${to}/${messageId}`, 'received');
+            
+            return safeJsonResponse({ messageId });
+          }
+          
+          // 获取消息
+          if (pathname === '/api/messages' && request.method === 'GET') {
+            const { valid, error, user } = await checkPermission(env, request);
+            if (!valid) return safeJsonResponse({ error }, 403);
+            
+            // 获取所有消息
+            const sentMessages = await env.BLOG_KV.list({ prefix: `user-messages/${user.username}/` });
+            const messages = [];
+            
+            for (const key of sentMessages.keys) {
+              const messageId = key.name.split('/').pop();
+              const message = await env.BLOG_KV.get(`messages/${messageId}`, 'json');
+              if (message) messages.push(message);
+            }
+            
+            // 按时间排序
+            messages.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+            
+            return safeJsonResponse(messages);
           }
           
           return safeJsonResponse({ error: 'API 未找到' }, 404);
@@ -716,7 +889,7 @@ export default {
   }
 };
 
-// 前端 HTML（修复评论删除问题）
+// 前端 HTML（添加用户主页、聊天功能和修复封禁功能）
 const indexHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -848,6 +1021,7 @@ const indexHTML = `<!DOCTYPE html>
       display: flex;
       align-items: center;
       margin-bottom: 15px;
+      cursor: pointer;
     }
     
     .avatar {
@@ -882,6 +1056,7 @@ const indexHTML = `<!DOCTYPE html>
       border-radius: 10px;
       margin-top: 10px;
       border-left: 3px solid var(--primary);
+      cursor: pointer;
     }
     
     .comment-header {
@@ -977,6 +1152,118 @@ const indexHTML = `<!DOCTYPE html>
       border-left-color: #fdcb6e;
     }
     
+    /* 用户主页样式 */
+    #profileModal {
+      display: none;
+      max-width: 600px;
+      margin: 20px auto;
+    }
+    
+    .profile-header {
+      text-align: center;
+      padding: 20px 0;
+      border-bottom: 1px solid #e0e0e0;
+      margin-bottom: 20px;
+    }
+    
+    .profile-tabs {
+      display: flex;
+      margin-bottom: 20px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    
+    .profile-tab {
+      padding: 10px 20px;
+      cursor: pointer;
+      font-weight: 600;
+      color: #777;
+    }
+    
+    .profile-tab.active {
+      color: var(--primary);
+      border-bottom: 2px solid var(--primary);
+    }
+    
+    .profile-tab-content {
+      display: none;
+    }
+    
+    .profile-tab-content.active {
+      display: block;
+    }
+    
+    /* 聊天界面样式 */
+    .chat-container {
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      height: 400px;
+    }
+    
+    .chat-header {
+      background: var(--primary);
+      color: white;
+      padding: 10px 15px;
+      font-weight: bold;
+    }
+    
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 15px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    
+    .message {
+      max-width: 80%;
+      padding: 10px 15px;
+      border-radius: 18px;
+      position: relative;
+    }
+    
+    .message.sent {
+      align-self: flex-end;
+      background: var(--primary);
+      color: white;
+      border-bottom-right-radius: 5px;
+    }
+    
+    .message.received {
+      align-self: flex-start;
+      background: #f1f1f1;
+      color: #333;
+      border-bottom-left-radius: 5px;
+    }
+    
+    .message-time {
+      font-size: 0.7rem;
+      opacity: 0.7;
+      text-align: right;
+      margin-top: 3px;
+    }
+    
+    .chat-input {
+      display: flex;
+      padding: 10px;
+      border-top: 1px solid #e0e0e0;
+      gap: 10px;
+    }
+    
+    .chat-input input {
+      flex: 1;
+      border-radius: 20px;
+      padding: 8px 15px;
+    }
+    
+    .chat-input button {
+      border-radius: 20px;
+      padding: 8px 15px;
+    }
+    
     @media (max-width: 768px) {
       h1 {
         font-size: 2.5rem;
@@ -1047,6 +1334,10 @@ const indexHTML = `<!DOCTYPE html>
         <input type="password" id="regPassword" placeholder="输入密码">
       </div>
       <div class="form-group">
+        <label for="regNickname">昵称</label>
+        <input type="text" id="regNickname" placeholder="输入昵称（可选）">
+      </div>
+      <div class="form-group">
         <label for="regAvatar">头像直链 (可选)</label>
         <input type="url" id="regAvatar" placeholder="https://example.com/avatar.jpg">
       </div>
@@ -1073,6 +1364,64 @@ const indexHTML = `<!DOCTYPE html>
       <div class="error" id="loginError"></div>
       <p>没有账号? <a href="#" id="showRegister">去注册</a></p>
     </div>
+    
+    <!-- 用户主页 -->
+    <div id="profileModal" class="card" style="display:none;">
+      <div class="profile-header">
+        <img id="profileAvatar" class="avatar" style="width:80px;height:80px;">
+        <h2 id="profileNickname"></h2>
+        <p id="profileUsername" style="color:#777;"></p>
+        <p id="profileCreatedAt" style="color:#777;font-size:0.9rem;"></p>
+      </div>
+      
+      <div class="profile-tabs">
+        <div class="profile-tab active" data-tab="profile">个人资料</div>
+        <div class="profile-tab" data-tab="messages">聊天</div>
+      </div>
+      
+      <div id="profileTab" class="profile-tab-content active">
+        <div class="form-group">
+          <label for="editNickname">昵称</label>
+          <input type="text" id="editNickname" placeholder="输入昵称">
+        </div>
+        <div class="form-group">
+          <label for="editAvatar">头像直链</label>
+          <input type="url" id="editAvatar" placeholder="https://example.com/avatar.jpg">
+        </div>
+        <div class="form-group">
+          <label for="currentPassword">当前密码</label>
+          <input type="password" id="currentPassword" placeholder="输入当前密码">
+        </div>
+        <div class="form-group">
+          <label for="newPassword">新密码</label>
+          <input type="password" id="newPassword" placeholder="输入新密码">
+        </div>
+        <button id="saveProfileBtn">保存更改</button>
+        <div class="error" id="profileError"></div>
+        
+        <!-- 管理员操作 -->
+        <div id="adminActions" style="display:none;margin-top:20px;">
+          <h3>管理员操作</h3>
+          <button id="banUserBtn" class="btn-ban" style="display:none;">封禁用户</button>
+          <button id="unbanUserBtn" class="btn-unban" style="display:none;">解封用户</button>
+        </div>
+      </div>
+      
+      <div id="messagesTab" class="profile-tab-content" style="display:none;">
+        <div class="chat-container">
+          <div class="chat-header">
+            <h3>聊天</h3>
+          </div>
+          <div class="chat-messages" id="chatMessages">
+            <!-- 消息将动态加载到这里 -->
+          </div>
+          <div class="chat-input">
+            <input type="text" id="chatInput" placeholder="输入消息...">
+            <button id="sendChatBtn">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -1080,9 +1429,14 @@ const indexHTML = `<!DOCTYPE html>
     const state = {
       token: localStorage.getItem('token') || '',
       username: localStorage.getItem('username') || '',
+      nickname: localStorage.getItem('nickname') || '',
       role: localStorage.getItem('role') || '',
-      avatar: localStorage.getItem('avatar') || ''
+      avatar: localStorage.getItem('avatar') || '',
+      createdAt: localStorage.getItem('createdAt') || ''
     };
+    
+    // 全局变量
+    let currentProfileUser = null;
     
     // HTML 转义函数（防止XSS攻击）
     function escapeHTML(str) {
@@ -1110,6 +1464,7 @@ const indexHTML = `<!DOCTYPE html>
       loginError: document.getElementById('loginError'),
       regUsername: document.getElementById('regUsername'),
       regPassword: document.getElementById('regPassword'),
+      regNickname: document.getElementById('regNickname'),
       regAvatar: document.getElementById('regAvatar'),
       regInviteCode: document.getElementById('regInviteCode'),
       registerBtn: document.getElementById('registerBtn'),
@@ -1118,6 +1473,25 @@ const indexHTML = `<!DOCTYPE html>
       showLogin: document.getElementById('showLogin'),
       registerModal: document.getElementById('registerModal'),
       loginModal: document.getElementById('loginModal'),
+      profileModal: document.getElementById('profileModal'),
+      profileAvatar: document.getElementById('profileAvatar'),
+      profileNickname: document.getElementById('profileNickname'),
+      profileUsername: document.getElementById('profileUsername'),
+      profileCreatedAt: document.getElementById('profileCreatedAt'),
+      editNickname: document.getElementById('editNickname'),
+      editAvatar: document.getElementById('editAvatar'),
+      currentPassword: document.getElementById('currentPassword'),
+      newPassword: document.getElementById('newPassword'),
+      saveProfileBtn: document.getElementById('saveProfileBtn'),
+      profileError: document.getElementById('profileError'),
+      adminActions: document.getElementById('adminActions'),
+      banUserBtn: document.getElementById('banUserBtn'),
+      unbanUserBtn: document.getElementById('unbanUserBtn'),
+      profileTabs: document.querySelectorAll('.profile-tab'),
+      profileTabContents: document.querySelectorAll('.profile-tab-content'),
+      chatMessages: document.getElementById('chatMessages'),
+      chatInput: document.getElementById('chatInput'),
+      sendChatBtn: document.getElementById('sendChatBtn'),
       tabs: document.querySelectorAll('.tab'),
       tabContents: document.querySelectorAll('.tab-content')
     };
@@ -1170,6 +1544,29 @@ const indexHTML = `<!DOCTYPE html>
           });
         });
       });
+      
+      // 切换个人资料标签
+      elements.profileTabs.forEach(function(tab) {
+        tab.addEventListener('click', function() {
+          elements.profileTabs.forEach(function(t) {
+            t.classList.remove('active');
+          });
+          tab.classList.add('active');
+          
+          var tabName = tab.getAttribute('data-tab');
+          elements.profileTabContents.forEach(function(content) {
+            content.classList.remove('active');
+            if (content.id === tabName + 'Tab') {
+              content.classList.add('active');
+              
+              // 如果切换到消息标签，加载消息
+              if (tabName === 'messages' && currentProfileUser) {
+                loadChatMessages();
+              }
+            }
+          });
+        });
+      });
 
       // 登录
       elements.loginBtn.addEventListener('click', function() {
@@ -1198,13 +1595,17 @@ const indexHTML = `<!DOCTYPE html>
           if (data.token) {
             state.token = data.token;
             state.username = data.username;
+            state.nickname = data.nickname || data.username;
             state.role = data.role;
             state.avatar = data.avatar;
+            state.createdAt = data.createdAt;
             
             localStorage.setItem('token', data.token);
             localStorage.setItem('username', data.username);
+            localStorage.setItem('nickname', data.nickname || data.username);
             localStorage.setItem('role', data.role);
             localStorage.setItem('avatar', data.avatar);
+            localStorage.setItem('createdAt', data.createdAt);
             
             updateAuthUI();
             clearError(elements.loginError);
@@ -1224,6 +1625,7 @@ const indexHTML = `<!DOCTYPE html>
       elements.registerBtn.addEventListener('click', function() {
         var username = elements.regUsername.value;
         var password = elements.regPassword.value;
+        var nickname = elements.regNickname.value || username;
         var avatar = elements.regAvatar.value;
         var inviteCode = elements.regInviteCode.value;
         
@@ -1238,6 +1640,7 @@ const indexHTML = `<!DOCTYPE html>
           body: JSON.stringify({ 
             username: username, 
             password: password,
+            nickname: nickname,
             avatar: avatar,
             inviteCode: inviteCode
           })
@@ -1255,6 +1658,7 @@ const indexHTML = `<!DOCTYPE html>
             alert('注册成功！请登录');
             elements.regUsername.value = '';
             elements.regPassword.value = '';
+            elements.regNickname.value = '';
             elements.regAvatar.value = '';
             elements.regInviteCode.value = '';
             clearError(elements.regError);
@@ -1326,6 +1730,115 @@ const indexHTML = `<!DOCTYPE html>
         e.preventDefault();
         showLoginModal();
       });
+      
+      // 保存用户资料
+      elements.saveProfileBtn.addEventListener('click', function() {
+        const nickname = elements.editNickname.value;
+        const avatar = elements.editAvatar.value;
+        const currentPassword = elements.currentPassword.value;
+        const newPassword = elements.newPassword.value;
+        
+        const data = {};
+        if (nickname) data.nickname = nickname;
+        if (avatar) data.avatar = avatar;
+        if (currentPassword && newPassword) {
+          data.currentPassword = currentPassword;
+          data.newPassword = newPassword;
+        }
+        
+        fetch('/api/users/' + state.username + '/profile', {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + state.token
+          },
+          body: JSON.stringify(data)
+        })
+        .then(response => {
+          if (!response.ok) {
+            return response.json().then(data => {
+              throw new Error(data.error || '保存失败');
+            });
+          }
+          return response.json();
+        })
+        .then(data => {
+          if (data.success) {
+            alert('资料已更新');
+            // 更新本地状态
+            if (nickname) {
+              state.nickname = nickname;
+              localStorage.setItem('nickname', nickname);
+            }
+            if (avatar) {
+              state.avatar = avatar;
+              localStorage.setItem('avatar', avatar);
+            }
+            // 更新UI
+            updateAuthUI();
+            
+            // 如果是当前用户主页，更新显示
+            if (currentProfileUser === state.username) {
+              elements.profileNickname.textContent = nickname;
+              elements.profileAvatar.src = avatar;
+            }
+          }
+        })
+        .catch(error => {
+          showError(elements.profileError, error.message);
+        });
+      });
+      
+      // 封禁用户
+      elements.banUserBtn.addEventListener('click', function() {
+        banUser(currentProfileUser);
+      });
+      
+      // 解封用户
+      elements.unbanUserBtn.addEventListener('click', function() {
+        unbanUser(currentProfileUser);
+      });
+      
+      // 发送聊天消息
+      elements.sendChatBtn.addEventListener('click', function() {
+        const message = elements.chatInput.value.trim();
+        if (!message) return;
+        
+        fetch('/api/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + state.token
+          },
+          body: JSON.stringify({
+            to: currentProfileUser,
+            content: message
+          })
+        })
+        .then(response => {
+          if (!response.ok) {
+            return response.json().then(data => {
+              throw new Error(data.error || '发送失败');
+            });
+          }
+          return response.json();
+        })
+        .then(data => {
+          elements.chatInput.value = '';
+          loadChatMessages();
+        })
+        .catch(error => {
+          console.error('发送消息失败:', error);
+        });
+      });
+      
+      // 点击头像显示用户主页
+      document.addEventListener('click', function(e) {
+        if (e.target.classList.contains('avatar') && e.target.alt) {
+          const username = e.target.alt;
+          showUserProfile(username);
+        }
+      });
     }
 
     // 加载帖子
@@ -1346,13 +1859,14 @@ const indexHTML = `<!DOCTYPE html>
             // XSS 修复：转义帖子内容
             var safeTitle = escapeHTML(post.title);
             var safeContent = escapeHTML(post.content);
+            var safeNickname = escapeHTML(post.nickname || post.author);
             
             html += '<div class="post" data-post-id="' + escapeHTML(post.id) + '">' +
-              '<div class="post-header">' +
+              '<div class="post-header" title="' + safeNickname + '">' +
                 '<img src="' + escapeHTML(post.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" ' +
                      'alt="' + escapeHTML(post.author) + '" class="avatar">' +
                 '<div>' +
-                  '<div class="author">' + escapeHTML(post.author) + '</div>' +
+                  '<div class="author">' + safeNickname + '</div>' +
                   '<div class="post-time">' + new Date(post.createdAt).toLocaleString() + '</div>' +
                 '</div>' +
               '</div>' +
@@ -1494,12 +2008,13 @@ const indexHTML = `<!DOCTYPE html>
             var comment = comments[i];
             // XSS 修复：转义评论内容
             var safeContent = escapeHTML(comment.content);
+            var safeNickname = escapeHTML(comment.nickname || comment.author);
             
-            html += '<div class="comment" data-comment-id="' + escapeHTML(comment.id) + '">' +
+            html += '<div class="comment" data-comment-id="' + escapeHTML(comment.id) + '" title="' + safeNickname + '">' +
                       '<div class="comment-header">' +
                         '<img src="' + escapeHTML(comment.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" ' +
                              'alt="' + escapeHTML(comment.author) + '" class="avatar" style="width:24px;height:24px;margin-right:5px;">' +
-                        '<span class="comment-author">' + escapeHTML(comment.author) + '</span>' +
+                        '<span class="comment-author">' + safeNickname + '</span>' +
                         '<span class="comment-time">' + new Date(comment.createdAt).toLocaleString() + '</span>' +
                       '</div>' +
                       '<p>' + safeContent + '</p>';
@@ -1526,12 +2041,10 @@ const indexHTML = `<!DOCTYPE html>
               
               if (!confirm('确定要删除这条评论吗？')) return;
               
-              // === 修复开始：使用正确的API路径 ===
               fetch('/api/comments/' + postId + '/' + commentId, {
                 method: 'DELETE',
                 headers: { 'Authorization': 'Bearer ' + state.token }
               })
-              // === 修复结束 ===
               .then(function(response) {
                 if (!response.ok) {
                   return response.json().then(function(data) {
@@ -1569,7 +2082,7 @@ const indexHTML = `<!DOCTYPE html>
           '<img src="' + (state.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" ' +
                'alt="' + state.username + '" class="avatar" style="width:40px;height:40px;">' +
           '<div>' +
-            '<div>' + state.username + ' ' + (state.role === 'admin' ? '(管理员)' : '') + '</div>' +
+            '<div>' + state.nickname + ' ' + (state.role === 'admin' ? '(管理员)' : '') + '</div>' +
             '<button id="logoutBtn" style="margin-top:5px;padding:3px 10px;font-size:0.9rem;">退出</button>' +
           '</div>' +
         '</div>';
@@ -1605,24 +2118,89 @@ const indexHTML = `<!DOCTYPE html>
     function showLoginModal() {
       elements.loginModal.style.display = 'block';
       elements.registerModal.style.display = 'none';
+      elements.profileModal.style.display = 'none';
     }
     
     function showRegisterModal() {
       elements.loginModal.style.display = 'none';
       elements.registerModal.style.display = 'block';
+      elements.profileModal.style.display = 'none';
+    }
+    
+    // 显示用户主页
+    function showUserProfile(username) {
+      currentProfileUser = username;
+      elements.profileModal.style.display = 'block';
+      
+      // 获取用户信息
+      fetch('/api/users/' + username)
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('无法获取用户信息');
+          }
+          return response.json();
+        })
+        .then(user => {
+          // 显示用户信息
+          elements.profileAvatar.src = user.avatar;
+          elements.profileNickname.textContent = user.nickname;
+          elements.profileUsername.textContent = '@' + user.username;
+          
+          if (user.createdAt) {
+            elements.profileCreatedAt.textContent = 
+              '注册于 ' + new Date(user.createdAt).toLocaleDateString();
+          }
+          
+          // 检查是否是当前用户
+          if (state.username === username) {
+            // 显示编辑表单
+            elements.editNickname.value = user.nickname;
+            elements.editAvatar.value = user.avatar;
+            elements.adminActions.style.display = 'none';
+          } else {
+            // 隐藏编辑表单
+            elements.editNickname.closest('.form-group').style.display = 'none';
+            elements.editAvatar.closest('.form-group').style.display = 'none';
+            elements.currentPassword.closest('.form-group').style.display = 'none';
+            elements.newPassword.closest('.form-group').style.display = 'none';
+            elements.saveProfileBtn.style.display = 'none';
+            
+            // 检查是否是管理员
+            if (state.role === 'admin') {
+              elements.adminActions.style.display = 'block';
+              
+              if (user.banned) {
+                elements.banUserBtn.style.display = 'none';
+                elements.unbanUserBtn.style.display = 'block';
+              } else {
+                elements.banUserBtn.style.display = 'block';
+                elements.unbanUserBtn.style.display = 'none';
+              }
+            }
+          }
+        })
+        .catch(error => {
+          console.error('获取用户信息失败:', error);
+          alert('无法获取用户信息');
+          elements.profileModal.style.display = 'none';
+        });
     }
 
     // 退出登录
     function logout() {
       localStorage.removeItem('token');
       localStorage.removeItem('username');
+      localStorage.removeItem('nickname');
       localStorage.removeItem('role');
       localStorage.removeItem('avatar');
+      localStorage.removeItem('createdAt');
       
       state.token = '';
       state.username = '';
+      state.nickname = '';
       state.role = '';
       state.avatar = '';
+      state.createdAt = '';
       
       updateAuthUI();
       loadPosts();
@@ -1646,9 +2224,17 @@ const indexHTML = `<!DOCTYPE html>
             throw new Error(data.error || '封禁失败');
           });
         }
-        alert('用户 ' + username + ' 已被封禁');
-        loadUsers(); // 如果在用户管理页面
-        loadPosts(); // 刷新帖子页面
+        return response.json();
+      })
+      .then(function(data) {
+        if (data.user) {
+          alert('用户 ' + username + ' 已被封禁');
+          // 更新用户主页上的按钮
+          if (currentProfileUser === username) {
+            elements.banUserBtn.style.display = 'none';
+            elements.unbanUserBtn.style.display = 'block';
+          }
+        }
       })
       .catch(function(error) {
         alert('封禁失败: ' + error.message);
@@ -1673,13 +2259,56 @@ const indexHTML = `<!DOCTYPE html>
             throw new Error(data.error || '解封失败');
           });
         }
-        alert('用户 ' + username + ' 已被解封');
-        loadUsers(); // 如果在用户管理页面
-        loadPosts(); // 刷新帖子页面
+        return response.json();
+      })
+      .then(function(data) {
+        if (data.user) {
+          alert('用户 ' + username + ' 已被解封');
+          // 更新用户主页上的按钮
+          if (currentProfileUser === username) {
+            elements.banUserBtn.style.display = 'block';
+            elements.unbanUserBtn.style.display = 'none';
+          }
+        }
       })
       .catch(function(error) {
         alert('解封失败: ' + error.message);
       });
+    }
+    
+    // 加载聊天消息
+    function loadChatMessages() {
+      fetch('/api/messages')
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('无法加载消息');
+          }
+          return response.json();
+        })
+        .then(messages => {
+          var html = '';
+          
+          for (var i = 0; i < messages.length; i++) {
+            var message = messages[i];
+            if (message.to === state.username || message.from === state.username) {
+              var isSent = message.from === state.username;
+              var safeContent = escapeHTML(message.content);
+              
+              html += '<div class="message ' + (isSent ? 'sent' : 'received') + '">' +
+                        '<div class="message-content">' + safeContent + '</div>' +
+                        '<div class="message-time">' + new Date(message.createdAt).toLocaleTimeString() + '</div>' +
+                      '</div>';
+            }
+          }
+          
+          elements.chatMessages.innerHTML = html;
+          
+          // 滚动到底部
+          elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+        })
+        .catch(error => {
+          console.error('加载消息失败:', error);
+        });
     }
 
     // 初始化应用
