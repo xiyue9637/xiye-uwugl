@@ -1,12 +1,12 @@
 // worker.js
-// 修复所有可能的异常，确保100%部署成功
+// 修复XSS漏洞、封禁功能和评论显示问题
 
 // 管理员凭证
 const ADMIN_USERNAME = 'admin';
 const ADMIN_PASSWORD = 'xiyue777';
 const BAN_MESSAGE = '您的账号已被管理员封禁,请联系 linyi8100@gmail.com 解封';
 
-// 简单的 UUID 生成器（避免 crypto.randomUUID() 兼容性问题）
+// 简单的 UUID 生成器
 function generateUUID() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
     const r = Math.random() * 16 | 0;
@@ -15,7 +15,7 @@ function generateUUID() {
   });
 }
 
-// 简化的 SHA-256 实现（确保无异常）
+// 简化的 SHA-256 实现
 function simpleSha256(str) {
   try {
     let hash = 0;
@@ -31,6 +31,17 @@ function simpleSha256(str) {
     console.error('SHA-256 error:', e);
     return 'error_hash';
   }
+}
+
+// HTML 转义函数（防止XSS攻击）
+function escapeHTML(str) {
+  if (!str) return '';
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '<')
+    .replace(/>/g, '>')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // 安全的 JSON 响应函数
@@ -71,7 +82,7 @@ function handleOptions() {
   });
 }
 
-// 初始化管理员（带完整错误处理）
+// 初始化管理员
 async function initAdmin(env) {
   try {
     const adminKey = `users/${ADMIN_USERNAME}`;
@@ -93,7 +104,6 @@ async function initAdmin(env) {
     }
   } catch (e) {
     console.error('初始化管理员失败:', e);
-    // 不抛出异常，只是记录错误
   }
 }
 
@@ -223,7 +233,7 @@ async function checkPermission(env, request) {
   }
 }
 
-// 主处理函数（带全局错误处理）
+// 主处理函数
 export default {
   async fetch(request, env) {
     try {
@@ -645,7 +655,7 @@ export default {
   }
 };
 
-// 前端 HTML（修复所有可能引起解析错误的语法）
+// 前端 HTML（修复XSS、封禁功能和评论显示问题）
 const indexHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -842,6 +852,18 @@ const indexHTML = `<!DOCTYPE html>
       font-size: 0.9rem;
     }
     
+    .btn-ban {
+      background: #ff9f43;
+      padding: 6px 12px;
+      font-size: 0.9rem;
+    }
+    
+    .btn-unban {
+      background: #00d2d3;
+      padding: 6px 12px;
+      font-size: 0.9rem;
+    }
+    
     .auth-section {
       display: flex;
       gap: 15px;
@@ -887,6 +909,11 @@ const indexHTML = `<!DOCTYPE html>
     
     .tab-content.active {
       display: block;
+    }
+    
+    .banned-user {
+      background-color: #ffeaa7;
+      border-left-color: #fdcb6e;
     }
     
     @media (max-width: 768px) {
@@ -991,6 +1018,17 @@ const indexHTML = `<!DOCTYPE html>
       role: localStorage.getItem('role') || '',
       avatar: localStorage.getItem('avatar') || ''
     };
+    
+    // HTML 转义函数（防止XSS攻击）
+    function escapeHTML(str) {
+      if (!str) return '';
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '<')
+        .replace(/>/g, '>')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
 
     // DOM 元素
     const elements = {
@@ -1236,37 +1274,48 @@ const indexHTML = `<!DOCTYPE html>
           var html = '';
           for (var i = 0; i < posts.length; i++) {
             var post = posts[i];
-            html += '<div class="post">' +
+            // XSS 修复：转义帖子内容
+            var safeTitle = escapeHTML(post.title);
+            var safeContent = escapeHTML(post.content);
+            
+            html += '<div class="post" data-post-id="' + escapeHTML(post.id) + '">' +
               '<div class="post-header">' +
-                '<img src="' + (post.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" ' +
-                     'alt="' + post.author + '" class="avatar">' +
+                '<img src="' + escapeHTML(post.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" ' +
+                     'alt="' + escapeHTML(post.author) + '" class="avatar">' +
                 '<div>' +
-                  '<div class="author">' + post.author + '</div>' +
+                  '<div class="author">' + escapeHTML(post.author) + '</div>' +
                   '<div class="post-time">' + new Date(post.createdAt).toLocaleString() + '</div>' +
                 '</div>' +
               '</div>' +
-              '<h3 class="post-title">' + post.title + '</h3>' +
-              '<div class="post-content">' + post.content + '</div>';
+              '<h3 class="post-title">' + safeTitle + '</h3>' +
+              '<div class="post-content">' + safeContent + '</div>';
             
             // 添加删除按钮（仅管理员可见）
             if (state.username && state.role === 'admin') {
               html += '<div class="controls">' +
-                        '<button class="btn-delete" data-post-id="' + post.id + '">删除</button>' +
+                        '<button class="btn-delete" data-post-id="' + escapeHTML(post.id) + '">删除</button>' +
                       '</div>';
             }
             
-            html += '<div class="comments">' +
+            // 评论区域
+            html += '<div class="comments-section">' +
                       '<h4>评论</h4>' +
+                      '<div class="comments-list" data-post-id="' + escapeHTML(post.id) + '">' +
+                        '<div class="loading-comments">加载评论中...</div>' +
+                      '</div>' +
                       '<div class="form-group" style="margin-top: 15px;">' +
                         '<textarea class="comment-input" placeholder="发表评论..." ' +
-                                  'data-post-id="' + post.id + '" rows="2"></textarea>' +
-                        '<button class="submit-comment" data-post-id="' + post.id + '">评论</button>' +
+                                  'data-post-id="' + escapeHTML(post.id) + '" rows="2"></textarea>' +
+                        '<button class="submit-comment" data-post-id="' + escapeHTML(post.id) + '">评论</button>' +
                       '</div>' +
                     '</div>' +
                   '</div>';
           }
           
           elements.postsContainer.innerHTML = html || '<p>还没有帖子，快来发布第一条吧！</p>';
+          
+          // 加载每个帖子的评论
+          loadAllComments();
           
           // 添加删除事件
           var deleteButtons = document.querySelectorAll('.btn-delete');
@@ -1322,7 +1371,12 @@ const indexHTML = `<!DOCTYPE html>
                   });
                 }
                 textarea.value = '';
-                loadPosts();
+                // 重新加载评论
+                var commentsList = document.querySelector('.comments-list[data-post-id="' + postId + '"]');
+                if (commentsList) {
+                  commentsList.innerHTML = '<div class="loading-comments">加载评论中...</div>';
+                  loadComments(postId);
+                }
               })
               .catch(function(error) {
                 alert(error.message || '评论失败');
@@ -1334,6 +1388,104 @@ const indexHTML = `<!DOCTYPE html>
           console.error('Load posts error:', error);
           elements.postsContainer.innerHTML = '<p>加载帖子失败，请刷新重试</p>';
           showError(elements.postError, error.message || '加载帖子失败');
+        });
+    }
+    
+    // 加载所有帖子的评论
+    function loadAllComments() {
+      var commentSections = document.querySelectorAll('.comments-list');
+      for (var i = 0; i < commentSections.length; i++) {
+        var postId = commentSections[i].getAttribute('data-post-id');
+        loadComments(postId);
+      }
+    }
+    
+    // 加载特定帖子的评论
+    function loadComments(postId) {
+      fetch('/api/posts/' + postId + '/comments')
+        .then(function(response) {
+          if (!response.ok) {
+            return response.json().then(function(data) {
+              throw new Error(data.error || '加载评论失败');
+            });
+          }
+          return response.json();
+        })
+        .then(function(comments) {
+          var commentsList = document.querySelector('.comments-list[data-post-id="' + postId + '"]');
+          if (!commentsList) return;
+          
+          if (comments.length === 0) {
+            commentsList.innerHTML = '<div class="no-comments">还没有评论，快来抢沙发！</div>';
+            return;
+          }
+          
+          var html = '';
+          for (var i = 0; i < comments.length; i++) {
+            var comment = comments[i];
+            // XSS 修复：转义评论内容
+            var safeContent = escapeHTML(comment.content);
+            
+            html += '<div class="comment" data-comment-id="' + escapeHTML(comment.id) + '">' +
+                      '<div class="comment-header">' +
+                        '<img src="' + escapeHTML(comment.avatar || 'https://api.dicebear.com/7.x/avataaars/svg?seed=default') + '" ' +
+                             'alt="' + escapeHTML(comment.author) + '" class="avatar" style="width:24px;height:24px;margin-right:5px;">' +
+                        '<span class="comment-author">' + escapeHTML(comment.author) + '</span>' +
+                        '<span class="comment-time">' + new Date(comment.createdAt).toLocaleString() + '</span>' +
+                      '</div>' +
+                      '<p>' + safeContent + '</p>';
+            
+            // 添加删除按钮（仅管理员和评论作者可见）
+            if (state.username && (state.role === 'admin' || state.username === comment.author)) {
+              html += '<div class="controls">' +
+                        '<button class="btn-delete" data-comment-id="' + escapeHTML(comment.id) + '" data-post-id="' + escapeHTML(postId) + '">删除</button>' +
+                      '</div>';
+            }
+            
+            html += '</div>';
+          }
+          
+          commentsList.innerHTML = html;
+          
+          // 添加评论删除事件
+          var commentDeleteButtons = commentsList.querySelectorAll('.btn-delete');
+          for (var i = 0; i < commentDeleteButtons.length; i++) {
+            commentDeleteButtons[i].addEventListener('click', function(e) {
+              e.stopPropagation();
+              var commentId = this.getAttribute('data-comment-id');
+              var postId = this.getAttribute('data-post-id');
+              
+              if (!confirm('确定要删除这条评论吗？')) return;
+              
+              fetch('/api/comments/' + postId + '/' + commentId, {
+                method: 'DELETE',
+                headers: { 'Authorization': 'Bearer ' + state.token }
+              })
+              .then(function(response) {
+                if (!response.ok) {
+                  return response.json().then(function(data) {
+                    throw new Error(data.error || '删除失败');
+                  });
+                }
+                // 重新加载评论
+                var commentsList = document.querySelector('.comments-list[data-post-id="' + postId + '"]');
+                if (commentsList) {
+                  commentsList.innerHTML = '<div class="loading-comments">加载评论中...</div>';
+                  loadComments(postId);
+                }
+              })
+              .catch(function(error) {
+                alert(error.message || '删除失败');
+              });
+            });
+          }
+        })
+        .catch(function(error) {
+          console.error('Load comments error:', error);
+          var commentsList = document.querySelector('.comments-list[data-post-id="' + postId + '"]');
+          if (commentsList) {
+            commentsList.innerHTML = '<div class="error-comments">加载评论失败</div>';
+          }
         });
     }
 
@@ -1403,6 +1555,60 @@ const indexHTML = `<!DOCTYPE html>
       
       updateAuthUI();
       loadPosts();
+    }
+    
+    // 封禁用户
+    function banUser(username) {
+      if (!confirm('确定要封禁用户 ' + username + ' 吗？')) return;
+      
+      fetch('/api/ban', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + state.token
+        },
+        body: JSON.stringify({ username: username })
+      })
+      .then(function(response) {
+        if (!response.ok) {
+          return response.json().then(function(data) {
+            throw new Error(data.error || '封禁失败');
+          });
+        }
+        alert('用户 ' + username + ' 已被封禁');
+        loadUsers(); // 如果在用户管理页面
+        loadPosts(); // 刷新帖子页面
+      })
+      .catch(function(error) {
+        alert('封禁失败: ' + error.message);
+      });
+    }
+    
+    // 解封用户
+    function unbanUser(username) {
+      if (!confirm('确定要解封用户 ' + username + ' 吗？')) return;
+      
+      fetch('/api/unban', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + state.token
+        },
+        body: JSON.stringify({ username: username })
+      })
+      .then(function(response) {
+        if (!response.ok) {
+          return response.json().then(function(data) {
+            throw new Error(data.error || '解封失败');
+          });
+        }
+        alert('用户 ' + username + ' 已被解封');
+        loadUsers(); // 如果在用户管理页面
+        loadPosts(); // 刷新帖子页面
+      })
+      .catch(function(error) {
+        alert('解封失败: ' + error.message);
+      });
     }
 
     // 初始化应用
