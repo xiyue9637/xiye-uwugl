@@ -1,5 +1,5 @@
 // worker.js
-// 修复用户头像点击问题并优化封禁功能
+// 修复私信功能并添加私信列表
 
 // 管理员凭证
 const ADMIN_USERNAME = 'admin';
@@ -795,8 +795,8 @@ export default {
             }
           }
           
-          // 发送消息
-          if (pathname === '/api/messages' && request.method === 'POST') {
+          // 发送私信
+          if (pathname === '/api/private-messages' && request.method === 'POST') {
             const { valid, error, user } = await checkPermission(env, request);
             if (!valid) return safeJsonResponse({ error }, 403);
             
@@ -831,27 +831,27 @@ export default {
             };
             
             // 保存消息
-            await env.BLOG_KV.put(`messages/${messageId}`, JSON.stringify(message));
+            await env.BLOG_KV.put(`private-messages/${messageId}`, JSON.stringify(message));
             
-            // 添加到发送者和接收者的消息列表
-            await env.BLOG_KV.put(`user-messages/${user.username}/${messageId}`, 'sent');
-            await env.BLOG_KV.put(`user-messages/${to}/${messageId}`, 'received');
+            // 添加到发送者和接收者的私信列表
+            await env.BLOG_KV.put(`user-private-messages/${user.username}/${messageId}`, 'sent');
+            await env.BLOG_KV.put(`user-private-messages/${to}/${messageId}`, 'received');
             
             return safeJsonResponse({ messageId });
           }
           
-          // 获取消息
-          if (pathname === '/api/messages' && request.method === 'GET') {
+          // 获取私信
+          if (pathname === '/api/private-messages' && request.method === 'GET') {
             const { valid, error, user } = await checkPermission(env, request);
             if (!valid) return safeJsonResponse({ error }, 403);
             
             // 获取所有消息
-            const sentMessages = await env.BLOG_KV.list({ prefix: `user-messages/${user.username}/` });
+            const sentMessages = await env.BLOG_KV.list({ prefix: `user-private-messages/${user.username}/` });
             const messages = [];
             
             for (const key of sentMessages.keys) {
               const messageId = key.name.split('/').pop();
-              const message = await env.BLOG_KV.get(`messages/${messageId}`, 'json');
+              const message = await env.BLOG_KV.get(`private-messages/${messageId}`, 'json');
               if (message) messages.push(message);
             }
             
@@ -859,6 +859,52 @@ export default {
             messages.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
             
             return safeJsonResponse(messages);
+          }
+          
+          // 获取最近联系人
+          if (pathname === '/api/private-messages/contacts' && request.method === 'GET') {
+            const { valid, error, user } = await checkPermission(env, request);
+            if (!valid) return safeJsonResponse({ error }, 403);
+            
+            // 获取所有消息
+            const sentMessages = await env.BLOG_KV.list({ prefix: `user-private-messages/${user.username}/` });
+            const contacts = new Map();
+            
+            for (const key of sentMessages.keys) {
+              const messageId = key.name.split('/').pop();
+              const message = await env.BLOG_KV.get(`private-messages/${messageId}`, 'json');
+              if (!message) continue;
+              
+              const contact = message.from === user.username ? message.to : message.from;
+              
+              // 获取联系人信息
+              const contactUser = await env.BLOG_KV.get(`users/${contact}`);
+              if (!contactUser) continue;
+              
+              let contactInfo;
+              try {
+                contactInfo = JSON.parse(contactUser);
+              } catch (e) {
+                continue;
+              }
+              
+              // 保存最近一条消息
+              if (!contacts.has(contact) || new Date(message.createdAt) > new Date(contacts.get(contact).lastMessageAt)) {
+                contacts.set(contact, {
+                  username: contact,
+                  nickname: contactInfo.nickname,
+                  avatar: contactInfo.avatar,
+                  lastMessage: message.content,
+                  lastMessageAt: message.createdAt
+                });
+              }
+            }
+            
+            // 转换为数组并按最后消息时间排序
+            const contactsArray = Array.from(contacts.values());
+            contactsArray.sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
+            
+            return safeJsonResponse(contactsArray);
           }
           
           return safeJsonResponse({ error: 'API 未找到' }, 404);
@@ -886,7 +932,7 @@ export default {
   }
 };
 
-// 前端 HTML（修复用户头像点击问题）
+// 前端 HTML（修复私信功能并添加私信列表）
 const indexHTML = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1189,8 +1235,8 @@ const indexHTML = `<!DOCTYPE html>
       display: block;
     }
     
-    /* 聊天界面样式 */
-    .chat-container {
+    /* 私信界面样式 */
+    .private-messages-container {
       border: 1px solid #e0e0e0;
       border-radius: 10px;
       overflow: hidden;
@@ -1199,14 +1245,14 @@ const indexHTML = `<!DOCTYPE html>
       height: 400px;
     }
     
-    .chat-header {
+    .private-messages-header {
       background: var(--primary);
       color: white;
       padding: 10px 15px;
       font-weight: bold;
     }
     
-    .chat-messages {
+    .private-messages-list {
       flex: 1;
       overflow-y: auto;
       padding: 15px;
@@ -1215,50 +1261,106 @@ const indexHTML = `<!DOCTYPE html>
       gap: 10px;
     }
     
-    .message {
+    .private-message {
       max-width: 80%;
       padding: 10px 15px;
       border-radius: 18px;
       position: relative;
     }
     
-    .message.sent {
+    .private-message.sent {
       align-self: flex-end;
       background: var(--primary);
       color: white;
       border-bottom-right-radius: 5px;
     }
     
-    .message.received {
+    .private-message.received {
       align-self: flex-start;
       background: #f1f1f1;
       color: #333;
       border-bottom-left-radius: 5px;
     }
     
-    .message-time {
+    .private-message-time {
       font-size: 0.7rem;
       opacity: 0.7;
       text-align: right;
       margin-top: 3px;
     }
     
-    .chat-input {
+    .private-messages-input {
       display: flex;
       padding: 10px;
       border-top: 1px solid #e0e0e0;
       gap: 10px;
     }
     
-    .chat-input input {
+    .private-messages-input input {
       flex: 1;
       border-radius: 20px;
       padding: 8px 15px;
     }
     
-    .chat-input button {
+    .private-messages-input button {
       border-radius: 20px;
       padding: 8px 15px;
+    }
+    
+    /* 私信列表样式 */
+    .private-messages-sidebar {
+      width: 250px;
+      border-right: 1px solid #e0e0e0;
+      overflow-y: auto;
+    }
+    
+    .private-messages-contacts {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    
+    .private-messages-contact {
+      padding: 10px 15px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    
+    .private-messages-contact:hover {
+      background-color: #f8f9fa;
+    }
+    
+    .private-messages-contact.active {
+      background-color: #e9ecef;
+    }
+    
+    .private-messages-contact-info {
+      flex: 1;
+      overflow: hidden;
+    }
+    
+    .private-messages-contact-name {
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    
+    .private-messages-contact-preview {
+      font-size: 0.85rem;
+      color: #777;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    
+    .private-messages-contact-time {
+      font-size: 0.75rem;
+      color: #777;
+      white-space: nowrap;
     }
     
     @media (max-width: 768px) {
@@ -1268,6 +1370,12 @@ const indexHTML = `<!DOCTYPE html>
       
       .card {
         padding: 20px 15px;
+      }
+      
+      .private-messages-sidebar {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid #e0e0e0;
       }
     }
   </style>
@@ -1315,7 +1423,10 @@ const indexHTML = `<!DOCTYPE html>
           <label for="postContent">内容</label>
           <textarea id="postContent" rows="6" placeholder="分享你的想法..."></textarea>
         </div>
-        <button id="submitPost">发布帖子</button>
+        <div style="display: flex; gap: 10px;">
+          <button id="submitPost">发布帖子</button>
+          <button id="privateMessagesBtn" style="background: linear-gradient(to right, #ff9f43, #ff6b6b);">私信</button>
+        </div>
         <div class="error" id="postError"></div>
       </div>
     </div>
@@ -1373,7 +1484,7 @@ const indexHTML = `<!DOCTYPE html>
       
       <div class="profile-tabs">
         <div class="profile-tab active" data-tab="profile">个人资料</div>
-        <div class="profile-tab" data-tab="messages">聊天</div>
+        <div class="profile-tab" data-tab="privateMessages">私信</div>
       </div>
       
       <div id="profileTab" class="profile-tab-content active">
@@ -1404,20 +1515,31 @@ const indexHTML = `<!DOCTYPE html>
         </div>
       </div>
       
-      <div id="messagesTab" class="profile-tab-content" style="display:none;">
-        <div class="chat-container">
-          <div class="chat-header">
-            <h3>聊天</h3>
+      <div id="privateMessagesTab" class="profile-tab-content" style="display:none;">
+        <div class="private-messages-container">
+          <div class="private-messages-header">
+            <h3>私信</h3>
           </div>
-          <div class="chat-messages" id="chatMessages">
+          <div class="private-messages-list" id="privateMessagesList">
             <!-- 消息将动态加载到这里 -->
           </div>
-          <div class="chat-input">
-            <input type="text" id="chatInput" placeholder="输入消息...">
-            <button id="sendChatBtn">发送</button>
+          <div class="private-messages-input">
+            <input type="text" id="privateMessageInput" placeholder="输入消息...">
+            <button id="sendPrivateMessageBtn">发送</button>
           </div>
         </div>
       </div>
+    </div>
+    
+    <!-- 私信列表弹窗 -->
+    <div id="privateMessagesSidebar" class="card" style="display:none; position:fixed; top:20px; right:20px; width:250px; height:calc(100% - 40px); z-index:100;">
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid #e0e0e0;">
+        <h2 style="font-size: 1.2rem; margin: 0;">私信联系人</h2>
+        <button id="closePrivateMessagesSidebar" style="background: none; border: none; cursor: pointer; font-size: 1.2rem;">×</button>
+      </div>
+      <ul class="private-messages-contacts" id="privateMessagesContacts">
+        <!-- 联系人将动态加载到这里 -->
+      </ul>
     </div>
   </div>
 
@@ -1434,6 +1556,7 @@ const indexHTML = `<!DOCTYPE html>
     
     // 全局变量
     let currentProfileUser = null;
+    let currentPrivateMessageContact = null;
     
     // HTML 转义函数（防止XSS攻击）
     function escapeHTML(str) {
@@ -1454,6 +1577,7 @@ const indexHTML = `<!DOCTYPE html>
       postType: document.getElementById('postType'),
       postContent: document.getElementById('postContent'),
       submitPost: document.getElementById('submitPost'),
+      privateMessagesBtn: document.getElementById('privateMessagesBtn'),
       postError: document.getElementById('postError'),
       loginUsername: document.getElementById('loginUsername'),
       loginPassword: document.getElementById('loginPassword'),
@@ -1486,9 +1610,12 @@ const indexHTML = `<!DOCTYPE html>
       unbanUserBtn: document.getElementById('unbanUserBtn'),
       profileTabs: document.querySelectorAll('.profile-tab'),
       profileTabContents: document.querySelectorAll('.profile-tab-content'),
-      chatMessages: document.getElementById('chatMessages'),
-      chatInput: document.getElementById('chatInput'),
-      sendChatBtn: document.getElementById('sendChatBtn'),
+      privateMessagesList: document.getElementById('privateMessagesList'),
+      privateMessageInput: document.getElementById('privateMessageInput'),
+      sendPrivateMessageBtn: document.getElementById('sendPrivateMessageBtn'),
+      privateMessagesContacts: document.getElementById('privateMessagesContacts'),
+      privateMessagesSidebar: document.getElementById('privateMessagesSidebar'),
+      closePrivateMessagesSidebar: document.getElementById('closePrivateMessagesSidebar'),
       tabs: document.querySelectorAll('.tab'),
       tabContents: document.querySelectorAll('.tab-content')
     };
@@ -1556,9 +1683,9 @@ const indexHTML = `<!DOCTYPE html>
             if (content.id === tabName + 'Tab') {
               content.classList.add('active');
               
-              // 如果切换到消息标签，加载消息
-              if (tabName === 'messages' && currentProfileUser) {
-                loadChatMessages();
+              // 如果切换到私信标签，加载消息
+              if (tabName === 'privateMessages' && currentProfileUser) {
+                loadPrivateMessages();
               }
             }
           });
@@ -1717,6 +1844,24 @@ const indexHTML = `<!DOCTYPE html>
         });
       });
 
+      // 切换私信列表
+      elements.privateMessagesBtn.addEventListener('click', function() {
+        if (!state.token || !state.username) {
+          alert('请先登录');
+          return;
+        }
+        
+        elements.privateMessagesSidebar.style.display = 'block';
+        loadPrivateMessagesContacts();
+      });
+      
+      // 关闭私信列表
+      if (elements.closePrivateMessagesSidebar) {
+        elements.closePrivateMessagesSidebar.addEventListener('click', function() {
+          elements.privateMessagesSidebar.style.display = 'none';
+        });
+      }
+
       // 切换注册/登录模态框
       elements.showRegister.addEventListener('click', function(e) {
         e.preventDefault();
@@ -1796,37 +1941,16 @@ const indexHTML = `<!DOCTYPE html>
         unbanUser(currentProfileUser);
       });
       
-      // 发送聊天消息
-      elements.sendChatBtn.addEventListener('click', function() {
-        const message = elements.chatInput.value.trim();
-        if (!message) return;
-        
-        fetch('/api/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer ' + state.token
-          },
-          body: JSON.stringify({
-            to: currentProfileUser,
-            content: message
-          })
-        })
-        .then(response => {
-          if (!response.ok) {
-            return response.json().then(data => {
-              throw new Error(data.error || '发送失败');
-            });
-          }
-          return response.json();
-        })
-        .then(data => {
-          elements.chatInput.value = '';
-          loadChatMessages();
-        })
-        .catch(error => {
-          console.error('发送消息失败:', error);
-        });
+      // 发送私信
+      elements.sendPrivateMessageBtn.addEventListener('click', function() {
+        sendPrivateMessage();
+      });
+      
+      // 回车发送私信
+      elements.privateMessageInput.addEventListener('keypress', function(e) {
+        if (e.key === 'Enter') {
+          sendPrivateMessage();
+        }
       });
       
       // 点击头像显示用户主页 - 修复：确保获取正确的用户名
@@ -1836,6 +1960,183 @@ const indexHTML = `<!DOCTYPE html>
           const username = e.target.alt.replace('@', '');
           showUserProfile(username);
         }
+      });
+    }
+
+    // 发送私信
+    function sendPrivateMessage() {
+      const message = elements.privateMessageInput.value.trim();
+      if (!message || !currentPrivateMessageContact) return;
+      
+      fetch('/api/private-messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer ' + state.token
+        },
+        body: JSON.stringify({
+          to: currentPrivateMessageContact,
+          content: message
+        })
+      })
+      .then(response => {
+        if (!response.ok) {
+          return response.json().then(data => {
+            throw new Error(data.error || '发送失败');
+          });
+        }
+        return response.json();
+      })
+      .then(data => {
+        elements.privateMessageInput.value = '';
+        loadPrivateMessages();
+      })
+      .catch(error => {
+        console.error('发送私信失败:', error);
+      });
+    }
+
+    // 加载私信联系人
+    function loadPrivateMessagesContacts() {
+      if (!state.token || !state.username) return;
+      
+      fetch('/api/private-messages/contacts', {
+        headers: {
+          'Authorization': 'Bearer ' + state.token
+        }
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('无法加载联系人');
+        }
+        return response.json();
+      })
+      .then(contacts => {
+        let html = '';
+        
+        for (let i = 0; i < contacts.length; i++) {
+          const contact = contacts[i];
+          const safeNickname = escapeHTML(contact.nickname);
+          const safeLastMessage = escapeHTML(contact.lastMessage);
+          
+          html += '<li class="private-messages-contact" data-username="' + escapeHTML(contact.username) + '">' +
+                    '<img src="' + escapeHTML(contact.avatar) + '" ' +
+                         'alt="' + safeNickname + '" class="avatar" style="width:40px;height:40px;">' +
+                    '<div class="private-messages-contact-info">' +
+                      '<div class="private-messages-contact-name">' + safeNickname + '</div>' +
+                      '<div class="private-messages-contact-preview">' + safeLastMessage + '</div>' +
+                    '</div>' +
+                    '<div class="private-messages-contact-time">' + 
+                      new Date(contact.lastMessageAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) + 
+                    '</div>' +
+                  '</li>';
+        }
+        
+        if (html === '') {
+          html = '<li style="padding: 15px; text-align: center; color: #777;">暂无联系人</li>';
+        }
+        
+        elements.privateMessagesContacts.innerHTML = html;
+        
+        // 添加点击事件
+        const contacts = document.querySelectorAll('.private-messages-contact');
+        for (let i = 0; i < contacts.length; i++) {
+          contacts[i].addEventListener('click', function() {
+            const username = this.getAttribute('data-username');
+            currentPrivateMessageContact = username;
+            
+            // 高亮选中的联系人
+            contacts.forEach(c => c.classList.remove('active'));
+            this.classList.add('active');
+            
+            // 显示私信界面
+            showPrivateMessages(username);
+          });
+        }
+      })
+      .catch(error => {
+        console.error('加载联系人失败:', error);
+        elements.privateMessagesContacts.innerHTML = 
+          '<li style="padding: 15px; text-align: center; color: #777;">加载失败</li>';
+      });
+    }
+
+    // 显示私信界面
+    function showPrivateMessages(username) {
+      // 如果在用户主页，显示用户主页的私信标签
+      if (currentProfileUser === username) {
+        // 切换到私信标签
+        const tabs = document.querySelectorAll('.profile-tab');
+        tabs.forEach(tab => {
+          if (tab.getAttribute('data-tab') === 'privateMessages') {
+            tab.click();
+          }
+        });
+      } 
+      // 否则显示私信列表弹窗
+      else {
+        elements.privateMessagesSidebar.style.display = 'block';
+        loadPrivateMessages(username);
+      }
+    }
+
+    // 加载私信
+    function loadPrivateMessages(username) {
+      if (!state.token || !state.username) return;
+      
+      // 如果传入username，设置为当前联系人
+      if (username) {
+        currentPrivateMessageContact = username;
+      }
+      
+      // 如果没有当前联系人，返回
+      if (!currentPrivateMessageContact) return;
+      
+      fetch('/api/private-messages', {
+        headers: {
+          'Authorization': 'Bearer ' + state.token
+        }
+      })
+      .then(response => {
+        if (!response.ok) {
+          throw new Error('无法加载私信');
+        }
+        return response.json();
+      })
+      .then(messages => {
+        let html = '';
+        
+        for (let i = 0; i < messages.length; i++) {
+          const message = messages[i];
+          
+          // 只显示与当前联系人的消息
+          if ((message.to === state.username && message.from === currentPrivateMessageContact) ||
+              (message.from === state.username && message.to === currentPrivateMessageContact)) {
+            const isSent = message.from === state.username;
+            const safeContent = escapeHTML(message.content);
+            
+            html += '<div class="private-message ' + (isSent ? 'sent' : 'received') + '">' +
+                      '<div class="message-content">' + safeContent + '</div>' +
+                      '<div class="private-message-time">' + 
+                        new Date(message.createdAt).toLocaleTimeString() + 
+                      '</div>' +
+                    '</div>';
+          }
+        }
+        
+        if (html === '') {
+          html = '<div style="text-align: center; color: #777; padding: 20px;">暂无消息</div>';
+        }
+        
+        elements.privateMessagesList.innerHTML = html;
+        
+        // 滚动到底部
+        elements.privateMessagesList.scrollTop = elements.privateMessagesList.scrollHeight;
+      })
+      .catch(error => {
+        console.error('加载私信失败:', error);
+        elements.privateMessagesList.innerHTML = 
+          '<div style="text-align: center; color: #777; padding: 20px;">加载失败</div>';
       });
     }
 
@@ -2117,12 +2418,14 @@ const indexHTML = `<!DOCTYPE html>
       elements.loginModal.style.display = 'block';
       elements.registerModal.style.display = 'none';
       elements.profileModal.style.display = 'none';
+      elements.privateMessagesSidebar.style.display = 'none';
     }
     
     function showRegisterModal() {
       elements.loginModal.style.display = 'none';
       elements.registerModal.style.display = 'block';
       elements.profileModal.style.display = 'none';
+      elements.privateMessagesSidebar.style.display = 'none';
     }
     
     // 显示用户主页
@@ -2277,41 +2580,6 @@ const indexHTML = `<!DOCTYPE html>
       .catch(function(error) {
         alert('解封失败: ' + error.message);
       });
-    }
-    
-    // 加载聊天消息
-    function loadChatMessages() {
-      fetch('/api/messages')
-        .then(response => {
-          if (!response.ok) {
-            throw new Error('无法加载消息');
-          }
-          return response.json();
-        })
-        .then(messages => {
-          var html = '';
-          
-          for (var i = 0; i < messages.length; i++) {
-            var message = messages[i];
-            if (message.to === state.username || message.from === state.username) {
-              var isSent = message.from === state.username;
-              var safeContent = escapeHTML(message.content);
-              
-              html += '<div class="message ' + (isSent ? 'sent' : 'received') + '">' +
-                        '<div class="message-content">' + safeContent + '</div>' +
-                        '<div class="message-time">' + new Date(message.createdAt).toLocaleTimeString() + '</div>' +
-                      '</div>';
-            }
-          }
-          
-          elements.chatMessages.innerHTML = html;
-          
-          // 滚动到底部
-          elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
-        })
-        .catch(error => {
-          console.error('加载消息失败:', error);
-        });
     }
 
     // 初始化应用
