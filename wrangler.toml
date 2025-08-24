@@ -1,0 +1,6 @@
+name = "blog-workers"
+main = "worker.js"
+compatibility_date = "2025-08-24"
+
+# 注意：KV 绑定将在部署后手动添加
+# 不要在部署前配置
